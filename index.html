@@ -517,7 +517,12 @@ async function handleStart() {
       btn.innerHTML = '✓';
       showModal(prize, true);
       setStatus('🎁 Приз отправлен в чат бота!');
+      
+      // Отправляем сообщение в чат после анимации
+      callApi({ action: 'notify', initData: tg?.initData || '' })
+        .catch(err => console.error('notify failed:', err));
     }, 5200);
+    
   } catch (err) {
     isSpinning = false;
     document.getElementById('start-btn').innerHTML = 'СТАРТ';
