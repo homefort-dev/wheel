@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Колесо Фортуны</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://web-api.max.ru/v1.0/webapp.js"></script>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
@@ -233,15 +234,14 @@ body { display: flex; flex-direction: column; align-items: center; padding: 20px
       <div class="badge" id="modal-badge">🎁 ВЫИГРЫШ</div>
       <div class="sub" id="modal-sub">Поздравляем!</div>
       <div class="label" id="modal-label">—</div>
-      <div class="desc" id="modal-desc">Сделайте скриншот 📸 Дальнейшие инструкции — в чате боте</div>
+      <div class="desc" id="modal-desc">Сделайте скриншот 📸 И перейдите по ссылке в чат боте</div>
       <button id="modal-close">Забрать приз</button>
     </div>
   </div>
 
 <script>
 // ==================== КОНФИГУРАЦИЯ ====================
-// ⚠️ Вставьте сюда URL вашего развёрнутого Apps Script (заканчивается на /exec)
-const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbz2yd22iUnmzTW7zcec4Ttsr7DRXeNeo5J0YktLANJMvfSAKGV8vm41g-7hxtW25q0O/exec';
+const BACKEND_URL = 'https://d5db25gqg41ntc0j47bk.iwzqm34r.apigw.yandexcloud.net/api';
 
 const PRIZES = [
   { id: 'cash_50',   label: 'Кэш 50₽',   tier: 'common' },
@@ -255,18 +255,62 @@ const PRIZES = [
 ];
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// ==================== Telegram WebApp ====================
-const tg = window.Telegram?.WebApp;
-if (tg) {
-  tg.ready();
-  tg.expand();
+// ==================== ОПРЕДЕЛЕНИЕ ПЛАТФОРМЫ ====================
+// Вариант 1 — по URL-параметру ?platform=tg|max
+// Вариант 2 — авто-определение по наличию SDK
+
+function detectPlatform() {
+  const urlParam = new URLSearchParams(window.location.search).get('platform');
+  if (urlParam === 'tg' || urlParam === 'max') return urlParam;
+
+  // MAX Bridge обычно регистрируется глобально под window.MaxApp или window.WebApp
+  if (window.MaxApp || (window.WebApp && !window.Telegram)) return 'max';
+
+  if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) return 'tg';
+
+  // Если ничего не определилось — по умолчанию tg
+  return 'tg';
+}
+
+const PLATFORM = detectPlatform();
+
+let platformInitData = '';
+
+if (PLATFORM === 'tg') {
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    try {
+      tg.setHeaderColor('#130421');
+      tg.setBackgroundColor('#130421');
+    } catch (e) {}
+    platformInitData = tg.initData || '';
+  }
+} else if (PLATFORM === 'max') {
+  // MAX SDK — интерфейс похож на Telegram, но может называться иначе
+  const maxApp = window.MaxApp || window.WebApp;
+  if (maxApp) {
+    try {
+      if (maxApp.ready) maxApp.ready();
+      if (maxApp.expand) maxApp.expand();
+    } catch (e) {}
+    platformInitData = maxApp.initData || '';
+  }
+}
+
+function closeApp() {
   try {
-    tg.setHeaderColor('#130421');
-    tg.setBackgroundColor('#130421');
+    if (PLATFORM === 'tg' && window.Telegram && window.Telegram.WebApp) {
+      window.Telegram.WebApp.close();
+    } else if (PLATFORM === 'max') {
+      const maxApp = window.MaxApp || window.WebApp;
+      if (maxApp && maxApp.close) maxApp.close();
+    }
   } catch (e) {}
 }
 
-// ==================== УТИЛИТЫ ГЕОМЕТРИИ ====================
+// ==================== ГЕОМЕТРИЯ ====================
 function polarToCartesian(cx, cy, r, deg) {
   const a = (deg - 90) * Math.PI / 180;
   return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
@@ -440,10 +484,11 @@ function celebrate(tier) {
 
 // ==================== API ====================
 async function callApi(payload) {
-  // text/plain — чтобы избежать CORS preflight в Apps Script
+  payload.platform = PLATFORM;
+  payload.initData = platformInitData;
   const r = await fetch(BACKEND_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -482,7 +527,7 @@ function showModal(prize, withConfetti) {
 
 document.getElementById('modal-close').addEventListener('click', () => {
   document.getElementById('modal-backdrop').classList.add('hidden');
-  if (tg) tg.close();
+  closeApp();
 });
 
 function findPrizeIndex(id) { return PRIZES.findIndex(p => p.id === id); }
@@ -495,9 +540,8 @@ async function handleStart() {
   btn.innerHTML = '<span class="spinner"></span>';
 
   try {
-    const data = await callApi({ action: 'spin', initData: tg?.initData || '' });
+    const data = await callApi({ action: 'spin' });
 
-    // На всякий случай — если пока жали, сервер записал, что уже крутил
     if (data.alreadySpun) {
       isSpinning = false; hasSpun = true;
       setStatus('🎁 Ваш приз уже был выдан');
@@ -507,7 +551,7 @@ async function handleStart() {
 
     const prize = data.prize;
     const idx = findPrizeIndex(prize.id);
-    const jitter = (Math.random() - 0.5) * 32;  // чтобы стрелка не всегда ровно по центру
+    const jitter = (Math.random() - 0.5) * 32;
     const target = 6 * 360 - idx * 45 + jitter;
     document.getElementById('rotor').style.transform = `rotate(${target}deg)`;
 
@@ -517,12 +561,11 @@ async function handleStart() {
       btn.innerHTML = '✓';
       showModal(prize, true);
       setStatus('🎁 Приз отправлен в чат бота!');
-      
-      // Отправляем сообщение в чат после анимации
-      callApi({ action: 'notify', initData: tg?.initData || '' })
+
+      // Отправляем сообщение в чат ПОСЛЕ анимации
+      callApi({ action: 'notify' })
         .catch(err => console.error('notify failed:', err));
     }, 5200);
-    
   } catch (err) {
     isSpinning = false;
     document.getElementById('start-btn').innerHTML = 'СТАРТ';
@@ -535,17 +578,13 @@ async function init() {
   renderWheel();
   renderStars();
 
-  if (!tg || !tg.initData) {
-    showError('Это приложение нужно открывать через Telegram');
-    return;
-  }
-  if (!BACKEND_URL || BACKEND_URL.includes('ВСТАВЬТЕ')) {
-    showError('Фронтенд не настроен: не указан BACKEND_URL');
+  if (!platformInitData) {
+    showError('Это приложение нужно открывать через мессенджер (Telegram или MAX)');
     return;
   }
 
   try {
-    const data = await callApi({ action: 'check', initData: tg.initData });
+    const data = await callApi({ action: 'check' });
     const btn = document.getElementById('start-btn');
     if (data.alreadySpun) {
       hasSpun = true;
