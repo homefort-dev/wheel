@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Колесо Фортуны</title>
+<!-- Telegram SDK -->
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<!-- MAX SDK подгружается динамически только если платформа = max (см. detectPlatform ниже) -->
+<!-- MAX SDK подгружается динамически в JS только если ?platform=max -->
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
@@ -255,22 +256,20 @@ const PRIZES = [
 ];
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// ==================== ОПРЕДЕЛЕНИЕ ПЛАТФОРМЫ ====================
-// Вариант 1 — по URL-параметру ?platform=tg|max
-// Вариант 2 — авто-определение по наличию SDK
+// ==================== ПЛАТФОРМА ====================
 
 function detectPlatform() {
   const urlParam = new URLSearchParams(window.location.search).get('platform');
   if (urlParam === 'tg' || urlParam === 'max') return urlParam;
 
+  // Если открыто в Telegram — initData будет от Telegram
   if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) return 'tg';
 
-  // По умолчанию tg, MAX определяется только по явному ?platform=max
+  // По умолчанию tg
   return 'tg';
 }
 
 const PLATFORM = detectPlatform();
-
 let platformInitData = '';
 
 function loadScript(src) {
@@ -278,7 +277,7 @@ function loadScript(src) {
     const s = document.createElement('script');
     s.src = src;
     s.onload = resolve;
-    s.onerror = reject;
+    s.onerror = () => reject(new Error('Не удалось загрузить ' + src));
     document.head.appendChild(s);
   });
 }
@@ -295,20 +294,33 @@ async function setupPlatform() {
       } catch (e) {}
       platformInitData = tg.initData || '';
     }
-  } else if (PLATFORM === 'max') {
-    // Подгружаем MAX SDK только если реально нужен — он недоступен извне MAX
+    return;
+  }
+
+  if (PLATFORM === 'max') {
+    // MAX Bridge SDK с CDN (см. https://dev.max.ru/docs/webapps/bridge)
     try {
-      await loadScript('https://web-api.max.ru/v1.0/webapp.js');
+      await loadScript('https://st.max.ru/js/max-web-app.js');
     } catch (e) {
-      console.warn('MAX SDK load failed:', e);
+      console.error('MAX SDK load failed:', e.message);
     }
-    const maxApp = window.MaxApp || window.WebApp;
+
+    // По документации — глобальный объект window.WebApp
+    const maxApp = window.WebApp;
     if (maxApp) {
       try {
-        if (maxApp.ready) maxApp.ready();
-        if (maxApp.expand) maxApp.expand();
+        // Аналог tg.ready() и tg.expand() — методов в MAX нет с такими именами.
+        // Но WebApp.BackButton доступен — просто скроем
+        if (maxApp.BackButton && maxApp.BackButton.hide) maxApp.BackButton.hide();
       } catch (e) {}
       platformInitData = maxApp.initData || '';
+    }
+
+    // Fallback: некоторые сборки MAX передают initData через URL hash
+    if (!platformInitData && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.slice(1));
+      const webAppData = hashParams.get('WebAppData');
+      if (webAppData) platformInitData = webAppData;
     }
   }
 }
@@ -317,9 +329,8 @@ function closeApp() {
   try {
     if (PLATFORM === 'tg' && window.Telegram && window.Telegram.WebApp) {
       window.Telegram.WebApp.close();
-    } else if (PLATFORM === 'max') {
-      const maxApp = window.MaxApp || window.WebApp;
-      if (maxApp && maxApp.close) maxApp.close();
+    } else if (PLATFORM === 'max' && window.WebApp && window.WebApp.close) {
+      window.WebApp.close();
     }
   } catch (e) {}
 }
@@ -341,7 +352,6 @@ function sectorFill(tier, i) {
   return i % 2 === 0 ? 'url(#grad-common-a)' : 'url(#grad-common-b)';
 }
 
-// ==================== ОТРИСОВКА КОЛЕСА ====================
 function renderWheel() {
   const rotor = document.getElementById('rotor');
   rotor.innerHTML = '';
@@ -576,7 +586,6 @@ async function handleStart() {
       showModal(prize, true);
       setStatus('🎁 Приз отправлен в чат бота!');
 
-      // Отправляем сообщение в чат ПОСЛЕ анимации
       callApi({ action: 'notify' })
         .catch(err => console.error('notify failed:', err));
     }, 5200);
